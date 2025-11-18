@@ -1,3 +1,6 @@
+import sys , os
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(base_dir)
 import torch
 import torch.nn as nn
 import torch_geometric
@@ -12,14 +15,15 @@ import matplotlib.pyplot as plt
 current_dir = Path(__file__).parent
 external_dir = current_dir.parent.parent
 sys.path.insert(0, str(external_dir))
-from subgraph_matching.model import Actor, BinaryClassifier, ACPPO, BCPPO, BinaryClassifierCritic, ActorCritic
 from utils.Utils_v2 import *
+from subgraph_matching.model import Actor, BinaryClassifier, ACPPO, BCPPO, BinaryClassifierCritic, ActorCritic
 import subprocess
 warnings.filterwarnings('ignore')
 enconding = 'utf-8'
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--graph_folder", type=str, required=True)
+parser.add_argument("--query_size", type=int, required=True, help="Size of the query graph")
 parser.add_argument("--train_num", type=int, default=100)
 parser.add_argument("--first_node_mode", type=int, default=0, help="0.select the max degree node; 1. random select a node")
 parser.add_argument("--num_epoch", type=int, default=100, help="running for train epoch")
@@ -45,8 +49,8 @@ time_stamp = time.strftime("%Y-%m-%d_%H:%M:%S")
 para_string = dataset_name + "_" + str(args.query_size) + "_" + str(args.reward_mode) + "_" + time_stamp + "_"
 actor_model_save_path = args.model_save_path + "/" + dataset_name + "/" + str(args.query_size) + "/" + para_string + "actor.pt"
 binaryclassifier_model_save_path = args.model_save_path + "/" + dataset_name + "/" + str(args.query_size) + "/" + para_string + "binaryclassifier.pt"
-data_graph_path = args.graph_folder + "/data_graph/" + dataset_name + ".graph"
-train_query_graph_folder = args.graph_folder + "/query_graph/" + str(args.query_size) + "/"
+data_graph_path = os.path.join(base_dir, args.graph_folder, "data_graph", f"{dataset_name}.graph")
+train_query_graph_folder = os.path.join(base_dir, args.graph_folder, "query_graph", str(args.query_size))
 
 
 
@@ -60,8 +64,8 @@ torch.autograd.set_detect_anomaly(True)
 
 if __name__ == '__main__':
     query_graph = Graph()
-    query_folders = os.listdir(train_query_graph_folder)
-    query_graph.LoadFromFile(train_query_graph_folder + query_folders[0])
+    query_folders = [f for f in os.listdir(train_query_graph_folder) if f.endswith('.graph')]
+    query_graph.LoadFromFile(os.path.join(train_query_graph_folder, query_folders[0]))
     build_candidate_pool = [False] * query_graph.vertices_count
     expand_search_tree = [False] * query_graph.vertices_count
     query_feat, query_elist= preprocess_query_graph(query_graph, data_graph, build_candidate_pool, expand_search_tree)
@@ -82,7 +86,7 @@ if __name__ == '__main__':
     for epoch_num in tqdm(range(args.num_epoch)):
         per_epoch_reward.append(0)
         for query_graph_name in query_folders:
-            query_graph_path = train_query_graph_folder + query_graph_name
+            query_graph_path = os.path.join(train_query_graph_folder, query_graph_name)
             query_graph = Graph()
             query_graph.LoadFromFile(query_graph_path)
             build_candidate_pool = [False] * query_graph.vertices_count

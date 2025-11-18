@@ -251,7 +251,8 @@ def create_path(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)  
 
 def execute_subgraph_matching_cpp(mode: str, data_graph: str, query_graph: str, time_limit: int, matching_plan: str = ""):
-    cpp_program_path = "subgraph_match_cpp/SubgraphMatching.out"
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cpp_program_path = os.path.join(base_dir, "subgraph_match_cpp", "SubgraphMatching.out")
     d_parameter = "-d"  
     q_parameter = "-q"  
     time_parameter = '-time_limit'
