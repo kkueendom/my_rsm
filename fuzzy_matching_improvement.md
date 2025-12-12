@@ -201,8 +201,9 @@
 - **节点相似度矩阵**：创建一个n×m的矩阵（n为查询图节点数，m为数据图节点数），存储每对节点间的相似度得分
   - 计算方法：结合标签相似度（如标签是否相同）和特征相似度（如度数、属性等）
   - 示例：`similarity_matrix[i][j] = 0.8` 表示查询图节点i与数据图节点j的相似度为0.8
-- **边相似度矩阵**：类似地，存储查询图边与数据图边之间的相似度
-  - 考虑边类型、权重和连接节点的相似度
+- **边相似度矩阵**：存储查询图边与数据图边之间的相似度
+  - 由于边只包含连接点信息，边相似度主要基于端点节点的相似度计算
+  - 考虑边在图中的结构位置和邻域结构
 - **存储优化**：使用稀疏矩阵存储相似度信息，只存储相似度高于阈值的项，减少内存使用
 
 #### 1.2 模糊匹配参数
@@ -210,7 +211,6 @@
   ```python
   class FuzzyMatchingConfig:
       node_similarity_threshold = 0.7  # 节点相似度阈值
-      edge_similarity_threshold = 0.6  # 边相似度阈值
       overall_similarity_threshold = 0.65  # 整体匹配相似度阈值
   ```
 - **容错参数**：
@@ -225,12 +225,132 @@
 ### 2. 特征表示增强
 
 #### 2.1 扩展节点特征
-在现有11维特征基础上，添加以下模糊匹配相关特征：
+在现有11维特征基础上，添加以下关键模糊匹配特征：
 - **节点相似度特征**：每个查询节点与数据图中所有节点的平均相似度
-- **最佳匹配特征**：每个查询节点的最高相似度得分及对应的数据图节点ID
-- **邻域相似度特征**：查询节点邻域与候选数据节点邻域的相似度
-- **结构位置特征**：节点在查询图中的结构重要性（如中心性指标）
-- **容错特征**：当前已使用的容错资源（已缺失的边数/节点数）
+- **邻域相似度特征**：查询节点邻域与候选数据节点邻域的相似度（与现有邻域特征互补）
+- **匹配质量特征**：当前部分匹配的整体质量得分（替代多个分散的特征）
+
+**精简理由**：
+- 保留节点相似度特征：作为模糊匹配的核心指标
+- 保留邻域相似度特征：补充现有邻域特征，提供更精确的结构相似度信息
+- 新增匹配质量特征：整合最佳匹配、结构位置和容错信息，提供更全面的匹配状态
+- 移除冗余特征：避免特征间的信息重叠，减少模型复杂度
+
+#### 2.1.1 现有特征在模糊匹配中的作用分析
+
+基于当前代码中的11维节点特征，我们可以分析它们在模糊匹配中的实际作用：
+
+**基础特征（高价值）**：
+1. **度数特征**：在模糊匹配中仍然重要，度数相似性是节点匹配的基础指标
+2. **标签特征**：即使允许模糊匹配，标签相似性仍是最重要的匹配依据之一
+3. **ID特征**：帮助模型区分不同节点，保持节点身份信息
+
+**统计特征（中等价值）**：
+4. **度数不小于查询节点的数据节点数**：提供候选节点规模的全局视角，帮助模型评估选择难度
+5. **相同标签的数据节点数**：提供标签分布信息，辅助模糊匹配决策
+
+**状态特征（高价值）**：
+6. **是否执行构建候选池**：直接指导匹配流程，在模糊匹配中同样关键
+7. **是否执行扩展搜索树**：同上，是匹配流程的核心决策信息
+
+**邻域特征（高价值）**：
+8. **等待构建候选池的邻居数**：反映局部结构状态，对模糊匹配很重要
+9. **标签相同且等待扩展的节点数**：提供标签分布的局部视角，辅助模糊匹配
+
+**全局特征（中等价值）**：
+10. **等待执行各操作的节点数**：提供整体匹配进度信息
+11. **查询图/数据图节点数**：提供图的规模信息，帮助模型调整匹配策略
+
+**现有特征的优势**：
+- 已包含度数、标签、邻域结构等关键信息
+- 提供了从局部到全局的多尺度视图
+- 包含了匹配流程的状态信息
+
+**现有特征的局限**：
+- 缺乏明确的相似度度量
+- 邻域特征仅考虑数量，未考虑质量（相似度）
+- 没有整体匹配质量的评估
+
+**结论**：
+现有特征在模糊匹配中确实能发挥重要作用，但需要补充相似度相关的特征。通过添加节点相似度、邻域相似度和匹配质量特征，可以显著提升模型在模糊匹配场景下的表现，同时保持特征集的简洁性和有效性。
+
+#### 2.1.2 精简特征集的实现
+
+基于以上分析，我们可以实现一个精简而有效的特征扩展方案：
+
+```python
+def enhance_node_features(query_feat, query_graph, data_graph, similarity_matrix, partial_match):
+    """
+    增强节点特征，添加模糊匹配相关的关键特征
+    
+    参数:
+        query_feat: 原始11维节点特征
+        query_graph: 查询图
+        data_graph: 数据图
+        similarity_matrix: 节点相似度矩阵
+        partial_match: 当前部分匹配状态
+        
+    返回:
+        增强后的节点特征 (14维)
+    """
+    num_nodes = query_graph.vertices_count
+    enhanced_features = torch.zeros((num_nodes, 14), device=query_feat.device)
+    
+    # 保留原始11维特征
+    enhanced_features[:, :11] = query_feat
+    
+    # 特征12: 节点相似度特征 - 每个查询节点与数据图中所有节点的平均相似度
+    for i in range(num_nodes):
+        enhanced_features[i, 11] = torch.mean(similarity_matrix[i])
+    
+    # 特征13: 邻域相似度特征 - 查询节点邻域与候选数据节点邻域的相似度
+    for i in range(num_nodes):
+        query_neighbors = query_graph.GetNeighbors(i)
+        if not query_neighbors:
+            enhanced_features[i, 12] = 0.0
+            continue
+            
+        # 找到与查询节点i最相似的数据节点
+        best_data_node = torch.argmax(similarity_matrix[i]).item()
+        
+        # 获取数据图中最佳匹配节点的邻居
+        data_neighbors = data_graph.GetNeighbors(best_data_node)
+        
+        # 计算邻域标签相似度
+        query_labels = {query_graph.GetVertexLabel(n) for n in query_neighbors}
+        data_labels = {data_graph.GetVertexLabel(n) for n in data_neighbors}
+        
+        # Jaccard相似度
+        intersection = len(query_labels.intersection(data_labels))
+        union = len(query_labels.union(data_labels))
+        enhanced_features[i, 12] = intersection / union if union > 0 else 0.0
+    
+    # 特征14: 匹配质量特征 - 当前部分匹配的整体质量得分
+    if partial_match:
+        # 计算已匹配节点的平均相似度
+        matched_nodes = [i for i in range(num_nodes) if partial_match.get(i) is not None]
+        if matched_nodes:
+            match_quality = 0.0
+            for i in matched_nodes:
+                data_node = partial_match[i]
+                match_quality += similarity_matrix[i][data_node].item()
+            match_quality /= len(matched_nodes)
+        else:
+            match_quality = 0.0
+            
+        # 为所有节点设置相同的匹配质量特征
+        enhanced_features[:, 13] = match_quality
+    else:
+        enhanced_features[:, 13] = 0.0
+    
+    return enhanced_features
+```
+
+这个实现方案的优势：
+1. **简洁高效**：只添加3个关键特征，避免特征冗余
+2. **信息互补**：新特征与现有特征形成互补，提供更全面的视图
+3. **计算可行**：所有特征都可以高效计算，不会显著增加计算负担
+4. **易于集成**：可以无缝集成到现有的模型架构中
 
 #### 2.2 相似度计算方法
 
@@ -280,19 +400,7 @@
   ```
 
 **边相似度计算**：
-- **边类型相似度**：如果边有类型，基于类型计算
-  ```python
-  def edge_type_similarity(edge1, edge2):
-      return 1.0 if edge1.type == edge2.type else 0.0
-  ```
-  
-- **边权重相似度**：如果边有权重，基于权重计算
-  ```python
-  def edge_weight_similarity(weight1, weight2):
-      max_weight = max(abs(weight1), abs(weight2), 1e-6)  # 避免除以0
-      return 1.0 - abs(weight1 - weight2) / max_weight
-  ```
-  
+由于边只包含两个连接点的信息，没有边类型、权重等属性，边相似度主要基于连接节点的相似度计算：
 - **边结构相似度**：基于边在图中的结构位置计算
   ```python
   def edge_structural_similarity(edge1, edge2, graph1, graph2):
@@ -310,6 +418,42 @@
       
       # 返回最佳匹配方式的相似度
       return max((u_sim + v_sim) / 2, (cross_sim1 + cross_sim2) / 2)
+  ```
+  
+- **边邻域相似度**：基于边邻域结构的相似度
+  ```python
+  def edge_neighborhood_similarity(edge1, edge2, graph1, graph2):
+      # 获取边的端点
+      u1, v1 = edge1
+      u2, v2 = edge2
+      
+      # 获取端点的邻居
+      u1_neighbors = set(graph1.get_neighbors(u1))
+      v1_neighbors = set(graph1.get_neighbors(v1))
+      u2_neighbors = set(graph2.get_neighbors(u2))
+      v2_neighbors = set(graph2.get_neighbors(v2))
+      
+      # 计算邻居标签集合的相似度
+      u1_labels = {graph1.get_vertex_label(n) for n in u1_neighbors}
+      v1_labels = {graph1.get_vertex_label(n) for n in v1_neighbors}
+      u2_labels = {graph2.get_vertex_label(n) for n in u2_neighbors}
+      v2_labels = {graph2.get_vertex_label(n) for n in v2_neighbors}
+      
+      # 计算Jaccard相似度
+      u_sim = len(u1_labels.intersection(u2_labels)) / len(u1_labels.union(u2_labels)) if u1_labels.union(u2_labels) else 0
+      v_sim = len(v1_labels.intersection(v2_labels)) / len(v1_labels.union(v2_labels)) if v1_labels.union(v2_labels) else 0
+      
+      return (u_sim + v_sim) / 2
+  ```
+  
+- **综合边相似度**：结合结构相似度和邻域相似度
+  ```python
+  def edge_similarity(edge1, edge2, graph1, graph2, weights=(0.7, 0.3)):
+      structural_sim = edge_structural_similarity(edge1, edge2, graph1, graph2)
+      neighborhood_sim = edge_neighborhood_similarity(edge1, edge2, graph1, graph2)
+      
+      # 加权平均
+      return weights[0] * structural_sim + weights[1] * neighborhood_sim
   ```
 
 **子图相似度计算**：
